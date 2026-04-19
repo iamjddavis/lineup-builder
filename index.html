@@ -153,7 +153,7 @@
 
 <div class="top-bar-outer">
   <div class="top-bar">
-    <input class="game-input" id="gameTitle" type="text" placeholder="Game #  ·  Date"/>
+    <input class="game-input" id="gameTitle" type="text" placeholder="Game #  •  Date"/>
     <div class="unsaved-dot" id="unsavedDot"></div>
     <div class="top-actions">
       <div class="export-wrap" id="loadWrap">
@@ -297,10 +297,26 @@ document.addEventListener("click",e=>{if(!document.getElementById("exportWrap").
 
 const MONTH_MAP={"january":"01","february":"02","march":"03","april":"04","may":"05","june":"06","july":"07","august":"08","september":"09","october":"10","november":"11","december":"12"};
 function slugFromTitle(title){
-  if(!title)return"lineup";const lower=title.toLowerCase();let mmdd="";
-  for(const[month,mm]of Object.entries(MONTH_MAP)){const re=new RegExp(month+"\\s+(\\d{1,2})");const m=lower.match(re);if(m){mmdd=mm+m[1].padStart(2,"0");break;}}
-  let base=title.split(/[|·,]/)[0].trim().toLowerCase().replace(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi,"").trim().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"");
-  if(!base)base="lineup";return mmdd?`${base}-${mmdd}`:base;
+  if(!title)return"lineup";
+  const lower=title.toLowerCase();
+  let mmdd="",monthRe=null;
+  // Find the first month+day reference; remember the regex so we can strip it
+  for(const[month,mm]of Object.entries(MONTH_MAP)){
+    const re=new RegExp(month+"\\s+(\\d{1,2})");
+    const m=lower.match(re);
+    if(m){mmdd=mm+m[1].padStart(2,"0");monthRe=re;break;}
+  }
+  // Build base slug from the whole title, but strip out the month+day we extracted
+  // and also strip common separator characters and day-of-week words
+  let base=lower;
+  if(monthRe)base=base.replace(monthRe,"");
+  base=base
+    .replace(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi,"")
+    .replace(/[|·•,]/g,"")   // drop separator chars
+    .replace(/[^a-z0-9]+/g,"-")
+    .replace(/^-+|-+$/g,"");
+  if(!base)base="lineup";
+  return mmdd?`${base}-${mmdd}`:base;
 }
 
 // ── Player select ─────────────────────────────────────────────────────────────
@@ -427,7 +443,15 @@ function validate(){
     }
   }
 
-  // Step 3: Per-player rule checks — repeatMode, IF/OF totals, streaks, back-to-back bench
+  // Step 3: Per-player rule checks — repeatMode, IF/OF totals, streaks, back-to-back bench, bench fairness
+  // First, compute each player's bench count and the minimum across the roster (for fairness check)
+  const benchCounts=[];
+  for(let r=0;r<n;r++){
+    let c=0;for(const p of grid[r])if(p==="—")c++;
+    benchCounts.push(c);
+  }
+  const minBench=benchCounts.length?Math.min(...benchCounts):0;
+
   for(let r=0;r<n;r++){
     const row=grid[r];
     const nonEmpty=row.filter(p=>p!=="");
@@ -473,6 +497,12 @@ function validate(){
           warnings.push(`Back-to-back bench (innings ${i+1}–${i+2})`);
           break;
         }
+      }
+
+      // Bench fairness — flag players who sit more than the min + 1
+      // Only applies if the lineup has any bench innings at all (lineup not empty)
+      if(benchCounts[r]>minBench+1){
+        warnings.push(`Benched ${benchCounts[r]}× while some players sit ${minBench}×`);
       }
 
       if(warnings.length){
@@ -732,7 +762,9 @@ function cloneState(s){return{ifTotal:s.ifTotal,ofTotal:s.ofTotal,ifStreak:s.ifS
 
 // Check if assigning `pos` to player `r` in this inning is legal under the given limits.
 // `s` is the player's state BEFORE this inning.
-function canAssign(r,pos,s,limits){
+// `allActiveStates` is an array of all active players' current states (including this player's own);
+//   used to enforce the bench fairness rule (nobody sits twice before everyone sits once).
+function canAssign(r,pos,s,limits,allActiveStates){
   // Hard: repeatMode (never relaxed)
   if(pos!=="—"&&(s.posCounts[pos]||0)>=repeatMode)return false;
   const cat=posCategory(pos);
@@ -744,6 +776,14 @@ function canAssign(r,pos,s,limits){
     if(s.ofStreak+1>limits.maxStreak)return false;
   }else if(cat==="BENCH"){
     if(!limits.allowBackToBackBench&&s.lastWasBench)return false;
+    // Bench fairness: this player can only sit if their bench count is at the current minimum
+    if(limits.enforceBenchFairness&&allActiveStates){
+      let minBench=Infinity;
+      for(const other of allActiveStates){
+        if(other.benchCount<minBench)minBench=other.benchCount;
+      }
+      if(s.benchCount>minBench)return false;
+    }
   }
   // NEUTRAL (P/C) has no soft-constraint penalty
   return true;
@@ -763,13 +803,10 @@ function applyAssign(s,pos){
 // Returns {success, grid} where grid is the fully-assigned working copy (even on partial fail).
 function trySolve(baseGrid,n,limits){
   const g=baseGrid.map(r=>[...r]);
-  // Seed state from any already-placed cells (we'll rebuild per inning so the solver stays consistent)
-  const states=buildPlayerStates(g,n,0); // start from 0 — we'll walk inning by inning
 
   // Walk each inning in order
   for(let inn=0;inn<INNINGS;inn++){
     // Snapshot player states BEFORE this inning (based on innings 0..inn-1)
-    // Because earlier innings may have locked cells we didn't choose, recompute from g
     const beforeStates=buildPlayerStates(g,n,inn);
 
     // Identify what's locked this inning and what's open
@@ -781,7 +818,6 @@ function trySolve(baseGrid,n,limits){
       if(v!==""&&v!=null){
         lockedPlayers.add(r);
         if(v!=="—")lockedPositions.add(v);
-        // Validate locked assignments still satisfy hard constraint (repeatMode) — if not, nothing we can do
       }else{
         openPlayers.push(r);
       }
@@ -789,39 +825,30 @@ function trySolve(baseGrid,n,limits){
 
     // What fielding positions still need filling this inning?
     const needed=FIELDING_POS.filter(p=>!lockedPositions.has(p));
-    const benchSlots=openPlayers.length-needed.length; // must be >=0 for a solution
+    const benchSlots=openPlayers.length-needed.length;
 
     if(benchSlots<0){
       // More positions needed than open players — impossible at hard-constraint level for this inning
       return{success:false,grid:g};
     }
 
-    // Each open player will get either one of `needed` positions or bench.
-    // Backtracking: iterate open players, try positions. Bench is represented as "—".
-    // Use MRV: order players by fewest legal options first.
+    // allStates: live state for every active player, updated as we solve.
+    // Locked players get their locked placement pre-applied (affects fairness math).
+    const allStates=beforeStates.map(s=>cloneState(s));
+    for(const r of lockedPlayers){
+      applyAssign(allStates[r],g[r][inn]);
+    }
 
     const benchTokens=Array(benchSlots).fill("—");
-    const assignmentPool=[...needed,...benchTokens]; // positions to distribute among open players
-
-    // Trial state per player (we'll copy beforeStates so mutations can be undone)
-    const trialStates={};
-    for(const r of openPlayers)trialStates[r]=cloneState(beforeStates[r]);
-
-    // Compute legal candidates for each open player (from assignmentPool, deduped for ordering purposes)
-    function legalFor(r){
-      const seen=new Set();
-      const out=[];
-      for(const p of assignmentPool){
-        if(seen.has(p))continue;seen.add(p);
-        if(canAssign(r,p,trialStates[r],limits))out.push(p);
-      }
-      return out;
-    }
+    const assignmentPool=[...needed,...benchTokens];
 
     // Randomize player processing order, then within the loop use MRV re-evaluation
     const remaining=shuffle([...openPlayers]);
-    const poolRemaining=shuffle([...assignmentPool]); // shuffle bench/position mix for variety
-    const assignments={}; // r -> pos
+    const poolRemaining=shuffle([...assignmentPool]);
+    const assignments={};
+
+    // Build array of active states for fairness lookup (stable reference — canAssign reads .benchCount)
+    // We just pass allStates as-is; canAssign finds the min across it.
 
     // Recursive backtracking: pick the player with fewest legal options among `remaining`
     function solve(){
@@ -831,11 +858,10 @@ function trySolve(baseGrid,n,limits){
       let bestIdx=-1,bestOpts=null,bestCount=Infinity;
       for(let i=0;i<remaining.length;i++){
         const r=remaining[i];
-        // Compute legal options from poolRemaining
         const seen=new Set();const opts=[];
         for(const p of poolRemaining){
           if(seen.has(p))continue;seen.add(p);
-          if(canAssign(r,p,trialStates[r],limits))opts.push(p);
+          if(canAssign(r,p,allStates[r],limits,allStates))opts.push(p);
         }
         if(opts.length<bestCount){bestCount=opts.length;bestIdx=i;bestOpts=opts;if(bestCount===0)break;}
       }
@@ -844,29 +870,26 @@ function trySolve(baseGrid,n,limits){
       const r=remaining[bestIdx];
       const shuffledOpts=shuffle(bestOpts);
 
-      // Remove player from remaining
       remaining.splice(bestIdx,1);
 
       for(const pos of shuffledOpts){
-        // Remove one instance of `pos` from poolRemaining
         const poolIdx=poolRemaining.indexOf(pos);
         if(poolIdx<0)continue;
         poolRemaining.splice(poolIdx,1);
 
-        // Apply
-        const stateBackup=cloneState(trialStates[r]);
-        applyAssign(trialStates[r],pos);
+        // Apply — mutates allStates[r]
+        const stateBackup=cloneState(allStates[r]);
+        applyAssign(allStates[r],pos);
         assignments[r]=pos;
 
         if(solve())return true;
 
         // Undo
-        trialStates[r]=stateBackup;
+        allStates[r]=stateBackup;
         delete assignments[r];
         poolRemaining.push(pos);
       }
 
-      // Restore player to remaining
       remaining.splice(bestIdx,0,r);
       return false;
     }
@@ -893,12 +916,15 @@ function randomizeBlanks(){
   for(let r=0;r<n&&!hasBlank;r++)for(let i=0;i<INNINGS;i++)if(grid[r][i]===""){hasBlank=true;break;}
   if(!hasBlank){showRelaxToast(null,null);return;}
 
-  // Soft-constraint tiers (most strict → most permissive)
+  // Soft-constraint tiers (most strict → most permissive).
+  // Bench fairness ("everyone sits once before anyone sits twice") is the highest priority —
+  // relaxed last. Order: IF/OF totals → streak → back-to-back bench → bench fairness.
   const tiers=[
-    {label:null,          maxIfTotal:MAX_IF_TOTAL,   maxOfTotal:MAX_OF_TOTAL,   maxStreak:MAX_STREAK,   allowBackToBackBench:false},
-    {label:"IF/OF totals (allowed up to 4)", maxIfTotal:4, maxOfTotal:4, maxStreak:MAX_STREAK,   allowBackToBackBench:false},
-    {label:"IF/OF totals (up to 4) and streak (up to 3 consecutive)", maxIfTotal:4, maxOfTotal:4, maxStreak:3, allowBackToBackBench:false},
-    {label:"IF/OF totals, streak, and back-to-back bench allowed",    maxIfTotal:4, maxOfTotal:4, maxStreak:3, allowBackToBackBench:true},
+    {label:null,                                                                                     maxIfTotal:MAX_IF_TOTAL, maxOfTotal:MAX_OF_TOTAL, maxStreak:MAX_STREAK, allowBackToBackBench:false, enforceBenchFairness:true},
+    {label:"IF/OF totals (allowed up to 4)",                                                          maxIfTotal:4,           maxOfTotal:4,           maxStreak:MAX_STREAK, allowBackToBackBench:false, enforceBenchFairness:true},
+    {label:"IF/OF totals (up to 4) and streak (up to 3 consecutive)",                                 maxIfTotal:4,           maxOfTotal:4,           maxStreak:3,          allowBackToBackBench:false, enforceBenchFairness:true},
+    {label:"IF/OF totals, streak, and back-to-back bench allowed",                                    maxIfTotal:4,           maxOfTotal:4,           maxStreak:3,          allowBackToBackBench:true,  enforceBenchFairness:true},
+    {label:"IF/OF totals, streak, back-to-back bench, and unequal bench distribution allowed",        maxIfTotal:4,           maxOfTotal:4,           maxStreak:3,          allowBackToBackBench:true,  enforceBenchFairness:false},
   ];
 
   let result=null,usedTier=0;
@@ -926,7 +952,6 @@ function randomizeBlanks(){
   showRelaxToast(usedTier===0?null:tiers[usedTier].label,false);
 }
 
-// ── Toast for relaxed-rule feedback ───────────────────────────────────────────
 // ── Toast for relaxed-rule feedback ───────────────────────────────────────────
 function showRelaxToast(message,isError,isSuccess){
   let el=document.getElementById("relaxToast");
