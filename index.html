@@ -48,6 +48,19 @@
   .export-item:hover{background:#243a2c;}
   .export-item+.export-item{border-top:1px solid #2e4e38;}
 
+  /* Load menu — wider, shows saved lineups */
+  .load-menu{min-width:260px;max-width:320px;max-height:420px;overflow-y:auto;}
+  .load-empty{padding:12px 14px;font-family:'DM Mono',monospace;font-size:11px;color:#5a7d5a;font-style:italic;letter-spacing:0.3px;}
+  .load-section{padding:7px 14px 5px;font-family:'DM Mono',monospace;font-size:9px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:#5a7d5a;background:#15211a;border-bottom:1px solid #2e4e38;}
+  .load-row{display:flex;align-items:stretch;border-bottom:1px solid #2e4e38;}
+  .load-row:last-child{border-bottom:none;}
+  .load-row-main{flex:1;padding:9px 12px;font-family:'DM Mono',monospace;font-size:11px;font-weight:500;color:#7aad7a;background:transparent;border:none;cursor:pointer;text-align:left;transition:background 0.12s;min-width:0;}
+  .load-row-main:hover{background:#243a2c;}
+  .load-row-title{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-transform:none;letter-spacing:0;}
+  .load-row-date{display:block;font-size:9px;color:#4a6d4a;margin-top:2px;letter-spacing:0.3px;}
+  .load-row-del{padding:0 12px;font-family:'DM Mono',monospace;font-size:13px;color:#5a7d5a;background:transparent;border:none;border-left:1px solid #2e4e38;cursor:pointer;transition:background 0.12s,color 0.12s;}
+  .load-row-del:hover{background:#3a2020;color:#f87171;}
+
   .settings-bar-outer{background:#eceae2;border-bottom:1px solid var(--border);width:100%;}
   .settings-bar{max-width:var(--max-w);margin:0 auto;padding:7px 20px;display:flex;align-items:center;gap:16px;font-size:11px;color:var(--text-muted);flex-wrap:wrap;}
   .setting-group{display:flex;align-items:center;gap:8px;font-weight:500;}
@@ -85,6 +98,7 @@
   .player-select{width:100%;max-width:126px;border:1.5px solid var(--border);border-radius:3px;background:var(--surface);font-family:'DM Mono',monospace;font-size:12px;font-weight:500;color:var(--text);padding:6px 20px 6px 7px;cursor:pointer;outline:none;appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%237a7870'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 6px center;transition:border-color 0.12s;}
   .player-select:focus{border-color:var(--accent);}
   .player-select.duplicate{background-color:var(--warn-bg);border-color:var(--warn);color:var(--warn);}
+  .pos-select.duplicate{background-color:var(--warn-bg)!important;border-color:var(--warn)!important;color:var(--warn)!important;}
 
   .pos-select{width:100%;border:1.5px solid var(--border);border-radius:3px;background:var(--surface);font-family:'DM Mono',monospace;font-size:12px;font-weight:500;color:var(--text-muted);padding:6px 2px;cursor:pointer;outline:none;appearance:none;-webkit-appearance:none;text-align:center;text-align-last:center;transition:background 0.1s,color 0.1s,border-color 0.1s;}
   .pos-select:focus{border-color:var(--accent);}
@@ -139,16 +153,20 @@
 
 <div class="top-bar-outer">
   <div class="top-bar">
-    <input class="game-input" id="gameTitle" type="text" placeholder="Scrimmage  ·  April 18"/>
+    <input class="game-input" id="gameTitle" type="text" placeholder="Game #  ·  Date"/>
     <div class="unsaved-dot" id="unsavedDot"></div>
     <div class="top-actions">
-      <button class="btn btn-ghost" onclick="triggerLoad()">Load</button>
+      <div class="export-wrap" id="loadWrap">
+        <button class="btn btn-ghost" onclick="toggleLoadMenu()">Load ▾</button>
+        <div class="export-menu load-menu" id="loadMenu"></div>
+      </div>
       <button class="btn btn-ghost" onclick="saveLineup()">Save</button>
       <div class="export-wrap" id="exportWrap">
         <button class="btn btn-ghost" onclick="toggleExportMenu()">Export ▾</button>
         <div class="export-menu" id="exportMenu">
           <button class="export-item" onclick="exportJPG();closeExportMenu()">JPG — lineup card</button>
           <button class="export-item" onclick="exportCSV();closeExportMenu()">CSV — data</button>
+          <button class="export-item" onclick="exportJSON();closeExportMenu()">JSON — backup file</button>
         </div>
       </div>
       <button class="btn btn-danger" onclick="confirmReset()">Reset</button>
@@ -237,9 +255,14 @@ let roster = ["Axel","Aiyaan","Brody","Bryshere","Emmett","Garret","Isaac","Jack
 let rosterEdit = [];
 const POSITIONS = ["","P","C","1B","2B","3B","SS","LF","CF","RF","—"];
 const FIELD_POS = ["P","C","1B","2B","3B","SS","LF","CF","RF","—"];
+const FIELDING_POS = ["P","C","1B","2B","3B","SS","LF","CF","RF"]; // all 9 spots, no bench
+const INFIELD = new Set(["1B","2B","3B","SS"]);
+const OUTFIELD = new Set(["LF","CF","RF"]);
 const INNINGS = 6;
-const MAX_STREAK = 2.5;
-const POS_WEIGHTS = {"P":[0.5,0],"C":[0,0.5],"1B":[1,0],"2B":[1,0],"3B":[1,0],"SS":[1,0],"LF":[0,1],"CF":[0,1],"RF":[0,1]};
+// Soft constraint defaults (may be relaxed by randomizer)
+const MAX_IF_TOTAL = 3;
+const MAX_OF_TOTAL = 3;
+const MAX_STREAK   = 2; // max consecutive IF or OF innings
 
 let grid = [];
 let players = [];
@@ -371,19 +394,103 @@ function buildCoverageRow(){
 }
 
 // ── Validation (uses cached DOM refs) ─────────────────────────────────────────
+// Checks all randomizer rules for each player, flags duplicate positions in an inning,
+// and updates the Coverage row. No popups — everything is inline/passive.
 function validate(){
   const n=numRows();
+
+  // Step 1: Clear any existing duplicate-position flags on dropdowns
   for(let r=0;r<n;r++){
-    const pos=grid[r].filter(p=>p!==""&&p!=="—");
-    const counts={};pos.forEach(p=>counts[p]=(counts[p]||0)+1);
-    const bad=Object.values(counts).some(c=>c>repeatMode);
-    const td=_statRepeatEls[r];if(!td)continue;
-    if(!pos.length){td.textContent="";td.className="stat-cell";}
-    else if(bad){td.textContent="⚠";td.className="stat-cell stat-warn";}
-    else{td.textContent="✓";td.className="stat-cell stat-ok";}
-    const bench=grid[r].filter(p=>p==="—").length;
-    const tdB=_statBenchEls[r];if(tdB)tdB.textContent=bench>0?bench:"";
+    for(let i=0;i<INNINGS;i++){
+      const sel=_posSelEls[r]&&_posSelEls[r][i];
+      if(sel)sel.classList.remove("duplicate");
+    }
   }
+
+  // Step 2: For each inning, find duplicate non-bench positions and flag them
+  for(let i=0;i<INNINGS;i++){
+    const posToRows={};
+    for(let r=0;r<n;r++){
+      const v=grid[r][i];
+      if(v&&v!=="—"){
+        if(!posToRows[v])posToRows[v]=[];
+        posToRows[v].push(r);
+      }
+    }
+    for(const[pos,rows]of Object.entries(posToRows)){
+      if(rows.length>1){
+        for(const r of rows){
+          const sel=_posSelEls[r]&&_posSelEls[r][i];
+          if(sel)sel.classList.add("duplicate");
+        }
+      }
+    }
+  }
+
+  // Step 3: Per-player rule checks — repeatMode, IF/OF totals, streaks, back-to-back bench
+  for(let r=0;r<n;r++){
+    const row=grid[r];
+    const nonEmpty=row.filter(p=>p!=="");
+    const td=_statRepeatEls[r];
+    if(!td)continue;
+
+    // Empty row → blank indicator
+    if(!nonEmpty.length){
+      td.textContent="";td.className="stat-cell";td.title="";
+    }else{
+      const warnings=[];
+
+      // repeatMode check
+      const posCounts={};
+      for(const p of row)if(p&&p!=="—")posCounts[p]=(posCounts[p]||0)+1;
+      for(const[pos,count]of Object.entries(posCounts)){
+        if(count>repeatMode)warnings.push(`${pos} played ${count}× (limit ${repeatMode})`);
+      }
+
+      // IF / OF totals (strict default = 3)
+      let ifTotal=0,ofTotal=0;
+      for(const p of row){
+        if(INFIELD.has(p))ifTotal++;
+        else if(OUTFIELD.has(p))ofTotal++;
+      }
+      if(ifTotal>MAX_IF_TOTAL)warnings.push(`${ifTotal} infield innings (target ≤${MAX_IF_TOTAL})`);
+      if(ofTotal>MAX_OF_TOTAL)warnings.push(`${ofTotal} outfield innings (target ≤${MAX_OF_TOTAL})`);
+
+      // Streaks — P/C don't reset, bench/blank do
+      let curIf=0,curOf=0,maxIf=0,maxOf=0;
+      for(const p of row){
+        if(INFIELD.has(p)){curIf++;curOf=0;if(curIf>maxIf)maxIf=curIf;}
+        else if(OUTFIELD.has(p)){curOf++;curIf=0;if(curOf>maxOf)maxOf=curOf;}
+        else if(p==="—"||p===""){curIf=0;curOf=0;}
+        // P, C → no change
+      }
+      if(maxIf>MAX_STREAK)warnings.push(`${maxIf} consecutive infield innings (target ≤${MAX_STREAK})`);
+      if(maxOf>MAX_STREAK)warnings.push(`${maxOf} consecutive outfield innings (target ≤${MAX_STREAK})`);
+
+      // Back-to-back bench
+      for(let i=0;i<row.length-1;i++){
+        if(row[i]==="—"&&row[i+1]==="—"){
+          warnings.push(`Back-to-back bench (innings ${i+1}–${i+2})`);
+          break;
+        }
+      }
+
+      if(warnings.length){
+        td.textContent="⚠";td.className="stat-cell stat-warn";
+        td.title=warnings.join(" · ");
+      }else{
+        td.textContent="✓";td.className="stat-cell stat-ok";
+        td.title="";
+      }
+    }
+
+    // Bench count column
+    const bench=row.filter(p=>p==="—").length;
+    const tdB=_statBenchEls[r];
+    if(tdB)tdB.textContent=bench>0?bench:"";
+  }
+
+  // Step 4: Coverage row (unchanged behavior — 9 unique fielders per inning)
   for(let i=0;i<INNINGS;i++){
     const col=[];
     for(let r=0;r<n;r++){const v=grid[r][i];if(v&&v!=="—")col.push(v);}
@@ -569,47 +676,275 @@ function attachColDrag() {
 }
 
 // ── Randomizer ────────────────────────────────────────────────────────────────
+// Inning-by-inning constraint solver.
+//
+// Hard constraints (never relaxed):
+//   • Each inning fills all 9 field positions (P,C,1B,2B,3B,SS,LF,CF,RF) exactly once
+//   • A player may not exceed `repeatMode` placements at the same position
+//   • Locked (pre-filled) cells are preserved
+//
+// Soft constraints (relaxed in order if no solution found):
+//   Tier 0 — all active (default)
+//   Tier 1 — allow IF/OF total up to 4 (was 3)
+//   Tier 2 — also allow streak up to 3 (was 2)
+//   Tier 3 — also allow back-to-back bench
+//
+// Category rules:
+//   IF = {1B,2B,3B,SS}, OF = {LF,CF,RF}
+//   P and C do NOT add to IF/OF totals and do NOT reset streaks.
+//     So IF→IF→P→IF trips the streak cap (streak=3) as intended.
+
 function shuffle(arr){const a=[...arr];for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}return a;}
-function checkStreak(posArr){
-  let ifR=0,ofR=0;
-  for(let i=0;i<posArr.length;i++){
-    const p=posArr[i];if(!p||p==="—")continue;
-    const w=POS_WEIGHTS[p];if(!w)continue;
-    if(w[0]>0){ifR+=w[0];ofR=0;}else{ofR+=w[1];ifR=0;}
-    if(ifR>MAX_STREAK||ofR>MAX_STREAK)return true;
-  }
-  return false;
+
+function posCategory(p){
+  if(INFIELD.has(p))return"IF";
+  if(OUTFIELD.has(p))return"OF";
+  if(p==="—")return"BENCH";
+  return"NEUTRAL"; // P, C
 }
-function checkConsecBench(posArr){for(let i=0;i<posArr.length-1;i++)if(posArr[i]==="—"&&posArr[i+1]==="—")return true;return false;}
-function canPlace(g,row,inn,pos){
-  if(pos!=="—"){
-    // Check inning column for duplicate — avoid creating temp array
-    for(let r=0;r<g.length;r++){if(r!==row&&g[r][inn]===pos)return false;}
-    // Check repeat across row
-    let count=0;for(let i=0;i<INNINGS;i++){if(i!==inn&&g[row][i]===pos)count++;}
-    if(count>=repeatMode)return false;
+
+// Build per-player state from the current grid up through inning `upTo` (exclusive).
+// Used to seed the solver with state from locked cells in earlier innings.
+function buildPlayerStates(g,n,upTo){
+  const states=[];
+  for(let r=0;r<n;r++){
+    const s={ifTotal:0,ofTotal:0,ifStreak:0,ofStreak:0,benchCount:0,lastWasBench:false,posCounts:{}};
+    for(let i=0;i<upTo;i++){
+      const p=g[r][i];
+      if(p===""||p==null){
+        // Blank cell before this inning — treat as no-op (resets last-was-bench flag)
+        s.lastWasBench=false;
+        continue;
+      }
+      const cat=posCategory(p);
+      if(cat==="IF"){s.ifTotal++;s.ifStreak++;s.ofStreak=0;s.lastWasBench=false;}
+      else if(cat==="OF"){s.ofTotal++;s.ofStreak++;s.ifStreak=0;s.lastWasBench=false;}
+      else if(cat==="BENCH"){s.benchCount++;s.ifStreak=0;s.ofStreak=0;s.lastWasBench=true;}
+      else{/* NEUTRAL (P/C): totals & streaks unchanged; not bench */s.lastWasBench=false;}
+      if(p!=="—")s.posCounts[p]=(s.posCounts[p]||0)+1;
+    }
+    states.push(s);
   }
-  const t=[...g[row]];t[inn]=pos;
-  return!checkStreak(t)&&!checkConsecBench(t);
+  return states;
 }
+
+function cloneState(s){return{ifTotal:s.ifTotal,ofTotal:s.ofTotal,ifStreak:s.ifStreak,ofStreak:s.ofStreak,benchCount:s.benchCount,lastWasBench:s.lastWasBench,posCounts:{...s.posCounts}};}
+
+// Check if assigning `pos` to player `r` in this inning is legal under the given limits.
+// `s` is the player's state BEFORE this inning.
+function canAssign(r,pos,s,limits){
+  // Hard: repeatMode (never relaxed)
+  if(pos!=="—"&&(s.posCounts[pos]||0)>=repeatMode)return false;
+  const cat=posCategory(pos);
+  if(cat==="IF"){
+    if(s.ifTotal+1>limits.maxIfTotal)return false;
+    if(s.ifStreak+1>limits.maxStreak)return false;
+  }else if(cat==="OF"){
+    if(s.ofTotal+1>limits.maxOfTotal)return false;
+    if(s.ofStreak+1>limits.maxStreak)return false;
+  }else if(cat==="BENCH"){
+    if(!limits.allowBackToBackBench&&s.lastWasBench)return false;
+  }
+  // NEUTRAL (P/C) has no soft-constraint penalty
+  return true;
+}
+
+// Apply an assignment to a state (mutates).
+function applyAssign(s,pos){
+  const cat=posCategory(pos);
+  if(cat==="IF"){s.ifTotal++;s.ifStreak++;s.ofStreak=0;s.lastWasBench=false;}
+  else if(cat==="OF"){s.ofTotal++;s.ofStreak++;s.ifStreak=0;s.lastWasBench=false;}
+  else if(cat==="BENCH"){s.benchCount++;s.ifStreak=0;s.ofStreak=0;s.lastWasBench=true;}
+  else{s.lastWasBench=false;}
+  if(pos!=="—")s.posCounts[pos]=(s.posCounts[pos]||0)+1;
+}
+
+// Try to fill all blank cells using the given constraint limits.
+// Returns {success, grid} where grid is the fully-assigned working copy (even on partial fail).
+function trySolve(baseGrid,n,limits){
+  const g=baseGrid.map(r=>[...r]);
+  // Seed state from any already-placed cells (we'll rebuild per inning so the solver stays consistent)
+  const states=buildPlayerStates(g,n,0); // start from 0 — we'll walk inning by inning
+
+  // Walk each inning in order
+  for(let inn=0;inn<INNINGS;inn++){
+    // Snapshot player states BEFORE this inning (based on innings 0..inn-1)
+    // Because earlier innings may have locked cells we didn't choose, recompute from g
+    const beforeStates=buildPlayerStates(g,n,inn);
+
+    // Identify what's locked this inning and what's open
+    const lockedPositions=new Set(); // positions already taken in this inning
+    const lockedPlayers=new Set();   // player indices already placed in this inning
+    const openPlayers=[];
+    for(let r=0;r<n;r++){
+      const v=g[r][inn];
+      if(v!==""&&v!=null){
+        lockedPlayers.add(r);
+        if(v!=="—")lockedPositions.add(v);
+        // Validate locked assignments still satisfy hard constraint (repeatMode) — if not, nothing we can do
+      }else{
+        openPlayers.push(r);
+      }
+    }
+
+    // What fielding positions still need filling this inning?
+    const needed=FIELDING_POS.filter(p=>!lockedPositions.has(p));
+    const benchSlots=openPlayers.length-needed.length; // must be >=0 for a solution
+
+    if(benchSlots<0){
+      // More positions needed than open players — impossible at hard-constraint level for this inning
+      return{success:false,grid:g};
+    }
+
+    // Each open player will get either one of `needed` positions or bench.
+    // Backtracking: iterate open players, try positions. Bench is represented as "—".
+    // Use MRV: order players by fewest legal options first.
+
+    const benchTokens=Array(benchSlots).fill("—");
+    const assignmentPool=[...needed,...benchTokens]; // positions to distribute among open players
+
+    // Trial state per player (we'll copy beforeStates so mutations can be undone)
+    const trialStates={};
+    for(const r of openPlayers)trialStates[r]=cloneState(beforeStates[r]);
+
+    // Compute legal candidates for each open player (from assignmentPool, deduped for ordering purposes)
+    function legalFor(r){
+      const seen=new Set();
+      const out=[];
+      for(const p of assignmentPool){
+        if(seen.has(p))continue;seen.add(p);
+        if(canAssign(r,p,trialStates[r],limits))out.push(p);
+      }
+      return out;
+    }
+
+    // Randomize player processing order, then within the loop use MRV re-evaluation
+    const remaining=shuffle([...openPlayers]);
+    const poolRemaining=shuffle([...assignmentPool]); // shuffle bench/position mix for variety
+    const assignments={}; // r -> pos
+
+    // Recursive backtracking: pick the player with fewest legal options among `remaining`
+    function solve(){
+      if(remaining.length===0)return poolRemaining.length===0;
+
+      // MRV: find player with fewest legal options in the current pool
+      let bestIdx=-1,bestOpts=null,bestCount=Infinity;
+      for(let i=0;i<remaining.length;i++){
+        const r=remaining[i];
+        // Compute legal options from poolRemaining
+        const seen=new Set();const opts=[];
+        for(const p of poolRemaining){
+          if(seen.has(p))continue;seen.add(p);
+          if(canAssign(r,p,trialStates[r],limits))opts.push(p);
+        }
+        if(opts.length<bestCount){bestCount=opts.length;bestIdx=i;bestOpts=opts;if(bestCount===0)break;}
+      }
+      if(bestCount===0)return false;
+
+      const r=remaining[bestIdx];
+      const shuffledOpts=shuffle(bestOpts);
+
+      // Remove player from remaining
+      remaining.splice(bestIdx,1);
+
+      for(const pos of shuffledOpts){
+        // Remove one instance of `pos` from poolRemaining
+        const poolIdx=poolRemaining.indexOf(pos);
+        if(poolIdx<0)continue;
+        poolRemaining.splice(poolIdx,1);
+
+        // Apply
+        const stateBackup=cloneState(trialStates[r]);
+        applyAssign(trialStates[r],pos);
+        assignments[r]=pos;
+
+        if(solve())return true;
+
+        // Undo
+        trialStates[r]=stateBackup;
+        delete assignments[r];
+        poolRemaining.push(pos);
+      }
+
+      // Restore player to remaining
+      remaining.splice(bestIdx,0,r);
+      return false;
+    }
+
+    const ok=solve();
+    if(!ok)return{success:false,grid:g};
+
+    // Commit assignments to g for this inning
+    for(const r of openPlayers){
+      g[r][inn]=assignments[r];
+    }
+  }
+
+  return{success:true,grid:g};
+}
+
 function randomizeBlanks(){
   const n=numRows();
   undoSnapshot={grid:grid.map(r=>[...r]),players:[...players]};
   document.getElementById("undoBtn").disabled=false;
-  const ng=grid.map(r=>[...r]);
-  const blanks=shuffle([...Array(n).keys()].flatMap(r=>[...Array(INNINGS).keys()].filter(i=>ng[r][i]==="").map(i=>[r,i])));
-  if(!blanks.length)return;
-  function solve(idx){
-    if(idx===blanks.length)return true;
-    const[row,inn]=blanks[idx];
-    for(const pos of shuffle(FIELD_POS)){
-      if(canPlace(ng,row,inn,pos)){ng[row][inn]=pos;if(solve(idx+1))return true;ng[row][inn]="";}
-    }
-    return false;
+
+  // Early out: nothing blank
+  let hasBlank=false;
+  for(let r=0;r<n&&!hasBlank;r++)for(let i=0;i<INNINGS;i++)if(grid[r][i]===""){hasBlank=true;break;}
+  if(!hasBlank){showRelaxToast(null,null);return;}
+
+  // Soft-constraint tiers (most strict → most permissive)
+  const tiers=[
+    {label:null,          maxIfTotal:MAX_IF_TOTAL,   maxOfTotal:MAX_OF_TOTAL,   maxStreak:MAX_STREAK,   allowBackToBackBench:false},
+    {label:"IF/OF totals (allowed up to 4)", maxIfTotal:4, maxOfTotal:4, maxStreak:MAX_STREAK,   allowBackToBackBench:false},
+    {label:"IF/OF totals (up to 4) and streak (up to 3 consecutive)", maxIfTotal:4, maxOfTotal:4, maxStreak:3, allowBackToBackBench:false},
+    {label:"IF/OF totals, streak, and back-to-back bench allowed",    maxIfTotal:4, maxOfTotal:4, maxStreak:3, allowBackToBackBench:true},
+  ];
+
+  let result=null,usedTier=0;
+  for(let t=0;t<tiers.length;t++){
+    result=trySolve(grid,n,tiers[t]);
+    if(result.success){usedTier=t;break;}
   }
-  solve(0);
-  for(let r=0;r<n;r++)for(let i=0;i<INNINGS;i++)if(grid[r][i]===""&&ng[r][i]!==""){grid[r][i]=ng[r][i];syncPosSelect(r,i);}
+
+  if(!result||!result.success){
+    // Couldn't even satisfy hard constraints — leave blanks, warn
+    showRelaxToast("Couldn't fill all cells — check roster size and locked positions.",true);
+    return;
+  }
+
+  // Commit: only fill cells that were blank
+  for(let r=0;r<n;r++){
+    for(let i=0;i<INNINGS;i++){
+      if(grid[r][i]===""&&result.grid[r][i]!==""){
+        grid[r][i]=result.grid[r][i];
+        syncPosSelect(r,i);
+      }
+    }
+  }
   markDirty();validate();
+  showRelaxToast(usedTier===0?null:tiers[usedTier].label,false);
+}
+
+// ── Toast for relaxed-rule feedback ───────────────────────────────────────────
+// ── Toast for relaxed-rule feedback ───────────────────────────────────────────
+function showRelaxToast(message,isError,isSuccess){
+  let el=document.getElementById("relaxToast");
+  if(!el){
+    el=document.createElement("div");el.id="relaxToast";
+    el.style.cssText="position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1c2b1c;color:#d4e8d4;font-family:'DM Mono',monospace;font-size:12px;font-weight:500;padding:10px 16px;border-radius:4px;border:1px solid #3a5a3a;box-shadow:0 4px 12px rgba(0,0,0,0.15);z-index:200;max-width:560px;text-align:center;opacity:0;transition:opacity 0.25s;pointer-events:none;";
+    document.body.appendChild(el);
+  }
+  if(!message){el.style.opacity="0";return;}
+  if(isError){el.style.background="#3a2020";el.style.color="#f87171";el.style.borderColor="#5a3030";}
+  else{el.style.background="#1c2b1c";el.style.color="#d4e8d4";el.style.borderColor="#3a5a3a";}
+  // Success messages (save/load) are shown verbatim, short duration
+  // Relax messages get a "Relaxed: " prefix, longer duration
+  if(isSuccess||isError){el.textContent=message;}
+  else{el.textContent="Relaxed: "+message;}
+  el.style.opacity="1";
+  clearTimeout(el._t);
+  el._t=setTimeout(()=>{el.style.opacity="0";},isSuccess?2000:5000);
 }
 function undoRandomize(){
   if(!undoSnapshot)return;
@@ -621,27 +956,169 @@ function undoRandomize(){
 }
 
 // ── Save / Load / Reset ───────────────────────────────────────────────────────
-function saveLineup(){
+// Save/load uses browser localStorage for quick access to past lineups.
+// JSON file export remains available under the Export menu for backups/sharing.
+// Note: localStorage is per-browser, per-device. Use JSON export to back up.
+
+const STORAGE_PREFIX="lineup:";
+const MAX_SAVED=50;
+
+function buildLineupPayload(){
   const title=document.getElementById("gameTitle").value||"";
-  const blob=new Blob([JSON.stringify({version:2,title,repeatMode,roster,players,grid},null,2)],{type:"application/json"});
-  const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=slugFromTitle(title)+".json";a.click();URL.revokeObjectURL(a.href);markClean();
+  return{version:3,title,repeatMode,roster,players,grid,savedAt:new Date().toISOString()};
 }
-function triggerLoad(){document.getElementById("fileInput").click();}
+function applyLineupPayload(d){
+  document.getElementById("gameTitle").value=d.title||"";
+  if(d.roster)roster=d.roster;
+  players=d.players||[];
+  grid=d.grid||[];
+  if(d.repeatMode)setRepeatMode(d.repeatMode);
+  undoSnapshot=null;document.getElementById("undoBtn").disabled=true;
+  buildTable();markClean();
+}
+
+function listSavedLineups(){
+  const out=[];
+  for(let i=0;i<localStorage.length;i++){
+    const key=localStorage.key(i);
+    if(!key||!key.startsWith(STORAGE_PREFIX))continue;
+    try{
+      const raw=localStorage.getItem(key);
+      if(!raw)continue;
+      const d=JSON.parse(raw);
+      out.push({key,title:d.title||key.slice(STORAGE_PREFIX.length),savedAt:d.savedAt||""});
+    }catch(e){/* skip corrupt entries */}
+  }
+  // Most recent first
+  out.sort((a,b)=>(b.savedAt||"").localeCompare(a.savedAt||""));
+  return out;
+}
+
+function pruneOldSaves(){
+  const saved=listSavedLineups();
+  if(saved.length<=MAX_SAVED)return;
+  const toRemove=saved.slice(MAX_SAVED);
+  for(const s of toRemove)localStorage.removeItem(s.key);
+}
+
+function saveLineup(){
+  const title=document.getElementById("gameTitle").value.trim();
+  if(!title){
+    showRelaxToast("Add a title before saving (e.g. \"Game 3 · May 2\")",true);
+    return;
+  }
+  const payload=buildLineupPayload();
+  const key=STORAGE_PREFIX+title;
+  try{
+    localStorage.setItem(key,JSON.stringify(payload));
+    pruneOldSaves();
+    markClean();
+    showRelaxToast(`Saved "${title}"`,false,true);
+  }catch(err){
+    showRelaxToast("Couldn't save — browser storage full or unavailable.",true);
+  }
+}
+
+function formatSaveDate(iso){
+  if(!iso)return"";
+  try{
+    const d=new Date(iso);
+    const now=new Date();
+    const sameDay=d.toDateString()===now.toDateString();
+    const opts=sameDay?{hour:"numeric",minute:"2-digit"}:{month:"short",day:"numeric"};
+    return d.toLocaleString(undefined,opts);
+  }catch(e){return"";}
+}
+
+function toggleLoadMenu(){
+  const menu=document.getElementById("loadMenu");
+  const isOpen=menu.classList.contains("open");
+  if(isOpen){menu.classList.remove("open");return;}
+  renderLoadMenu();
+  menu.classList.add("open");
+}
+function closeLoadMenu(){document.getElementById("loadMenu").classList.remove("open");}
+
+function renderLoadMenu(){
+  const menu=document.getElementById("loadMenu");
+  menu.innerHTML="";
+  const saved=listSavedLineups();
+
+  if(saved.length===0){
+    const empty=document.createElement("div");
+    empty.className="load-empty";
+    empty.textContent="No saved lineups yet";
+    menu.appendChild(empty);
+  }else{
+    const header=document.createElement("div");
+    header.className="load-section";
+    header.textContent=`Saved (${saved.length})`;
+    menu.appendChild(header);
+
+    for(const s of saved){
+      const row=document.createElement("div");row.className="load-row";
+      const btn=document.createElement("button");btn.className="load-row-main";btn.title="Load "+s.title;
+      const t=document.createElement("span");t.className="load-row-title";t.textContent=s.title;
+      const d=document.createElement("span");d.className="load-row-date";d.textContent=formatSaveDate(s.savedAt);
+      btn.appendChild(t);btn.appendChild(d);
+      btn.onclick=()=>{loadFromStorage(s.key);closeLoadMenu();};
+      const del=document.createElement("button");del.className="load-row-del";del.textContent="✕";del.title="Delete "+s.title;
+      del.onclick=(e)=>{e.stopPropagation();deleteFromStorage(s.key,s.title);};
+      row.appendChild(btn);row.appendChild(del);
+      menu.appendChild(row);
+    }
+  }
+
+  // Always include file-import escape hatch
+  const fileBtn=document.createElement("button");
+  fileBtn.className="export-item";
+  fileBtn.style.borderTop=saved.length?"1px solid #2e4e38":"none";
+  fileBtn.textContent="Load from file…";
+  fileBtn.onclick=()=>{closeLoadMenu();triggerFileLoad();};
+  menu.appendChild(fileBtn);
+}
+
+function loadFromStorage(key){
+  try{
+    const raw=localStorage.getItem(key);
+    if(!raw){showRelaxToast("Couldn't find that lineup.",true);return;}
+    const d=JSON.parse(raw);
+    applyLineupPayload(d);
+    showRelaxToast(`Loaded "${d.title||""}"`,false,true);
+  }catch(err){
+    showRelaxToast("Couldn't load — file may be corrupted.",true);
+  }
+}
+
+function deleteFromStorage(key,title){
+  if(!confirm(`Delete "${title}"?`))return;
+  localStorage.removeItem(key);
+  renderLoadMenu(); // refresh the menu in place
+}
+
+function triggerFileLoad(){document.getElementById("fileInput").click();}
 function loadLineup(e){
   const file=e.target.files[0];if(!file)return;
   const reader=new FileReader();
   reader.onload=evt=>{
     try{
       const d=JSON.parse(evt.target.result);
-      document.getElementById("gameTitle").value=d.title||"";
-      if(d.roster)roster=d.roster;players=d.players||[];grid=d.grid||[];
-      if(d.repeatMode)setRepeatMode(d.repeatMode);
-      undoSnapshot=null;document.getElementById("undoBtn").disabled=true;
-      buildTable();markClean();
-    }catch(err){alert("Couldn't load file.");}
+      applyLineupPayload(d);
+    }catch(err){showRelaxToast("Couldn't load file — not valid JSON.",true);}
   };
   reader.readAsText(file);e.target.value="";
 }
+
+function exportJSON(){
+  const payload=buildLineupPayload();
+  const title=payload.title||"lineup";
+  const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});
+  const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=slugFromTitle(title)+".json";a.click();URL.revokeObjectURL(a.href);
+}
+
+// Close load menu on outside click (same pattern as export menu)
+document.addEventListener("click",e=>{if(!document.getElementById("loadWrap").contains(e.target))closeLoadMenu();});
+
 function confirmReset(){document.getElementById("resetModal").classList.add("open");}
 function closeModal(id){document.getElementById(id).classList.remove("open");}
 function doReset(){
